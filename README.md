@@ -12,6 +12,14 @@ For IPsec support, it uses either of the following :
 For further package dependencies and known issues, please see the Wiki :
 * https://github.com/nm-l2tp/network-manager-l2tp/wiki 
 
+## Debian-way buld package
+Install dependences before continue
+
+```
+cd /path/to/network-mananger-l2tp
+dpkg-source --before-build . && dpkg-buildpackage -b -uc -us -rfakeroot && dpkg-source --after-build .
+```
+
 ## Building
 
     ./autogen.sh
