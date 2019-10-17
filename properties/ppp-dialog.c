@@ -22,7 +22,7 @@
 
 #include "nm-default.h"
 
-#include "advanced-dialog.h"
+#include "ppp-dialog.h"
 
 #include <errno.h>
 
@@ -37,7 +37,7 @@
 #define TAG_MSCHAPV2 3
 #define TAG_EAP      4
 
-static const char *advanced_keys[] = {
+static const char *ppp_keys[] = {
 	NM_L2TP_KEY_REFUSE_EAP,
 	NM_L2TP_KEY_REFUSE_PAP,
 	NM_L2TP_KEY_REFUSE_CHAP,
@@ -65,7 +65,7 @@ copy_values (const char *key, const char *value, gpointer user_data)
 	GHashTable *hash = (GHashTable *) user_data;
 	const char **i;
 
-	for (i = &advanced_keys[0]; *i; i++) {
+	for (i = &ppp_keys[0]; *i; i++) {
 		if (strcmp (key, *i))
 			continue;
 		g_hash_table_insert (hash, g_strdup (key), g_strdup (value));
@@ -73,7 +73,7 @@ copy_values (const char *key, const char *value, gpointer user_data)
 }
 
 GHashTable *
-advanced_dialog_new_hash_from_connection (NMConnection *connection,
+ppp_dialog_new_hash_from_connection (NMConnection *connection,
                                           GError **error)
 {
 	GHashTable *hash;
@@ -379,11 +379,10 @@ auth_methods_setup (GtkBuilder *builder, GHashTable *hash)
 }
 
 GtkWidget *
-advanced_dialog_new (GHashTable *hash)
+ppp_dialog_new (GHashTable *hash, const char *authtype)
 {
 	GtkBuilder *builder;
 	GtkWidget *dialog = NULL;
-	char *ui_file = NULL;
 	GtkWidget *widget;
 	const char *value;
 	gboolean mppe = FALSE;
@@ -391,27 +390,27 @@ advanced_dialog_new (GHashTable *hash)
 
 	g_return_val_if_fail (hash != NULL, NULL);
 
-	ui_file = g_strdup_printf ("%s/%s", UIDIR, "nm-l2tp-dialog.ui");
 	builder = gtk_builder_new ();
-
 	gtk_builder_set_translation_domain (builder, GETTEXT_PACKAGE);
-	if (!gtk_builder_add_from_file (builder, ui_file, &error)) {
+	if (!gtk_builder_add_from_resource (builder, "/org/freedesktop/network-manager-l2tp/nm-l2tp-dialog.ui", &error)) {
 		g_warning ("Couldn't load builder file: %s",
 				   error ? error->message : "(unknown)");
 		g_clear_error (&error);
 		g_object_unref (G_OBJECT (builder));
-		goto out;
+		return NULL;
 	}
 
-	dialog = GTK_WIDGET (gtk_builder_get_object (builder, "l2tp-advanced-dialog"));
+	dialog = GTK_WIDGET (gtk_builder_get_object (builder, "l2tp-ppp-dialog"));
 	if (!dialog) {
 		g_object_unref (G_OBJECT (builder));
-		goto out;
+		return NULL;
 	}
 	gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
 
 	g_object_set_data_full (G_OBJECT (dialog), "gtkbuilder-xml",
 	                        builder, (GDestroyNotify) g_object_unref);
+
+	g_object_set_data (G_OBJECT (dialog), "auth-type", GINT_TO_POINTER (authtype));
 
 	setup_security_combo (builder, hash);
 
@@ -497,10 +496,6 @@ advanced_dialog_new (GHashTable *hash)
 		gtk_spin_button_set_value (GTK_SPIN_BUTTON (widget), 1400);
 	}
 
-	widget = GTK_WIDGET (gtk_builder_get_object (builder,"ppp_use_mppe"));
-	handle_mppe_changed (widget, TRUE, builder);
-	g_signal_connect (G_OBJECT (widget), "toggled", G_CALLBACK (mppe_toggled_cb), builder);
-
 	widget = GTK_WIDGET (gtk_builder_get_object (builder,"ppp_mru_spinbutton"));
 	value = g_hash_table_lookup (hash, NM_L2TP_KEY_MRU);
 	if (value && *value) {
@@ -515,13 +510,11 @@ advanced_dialog_new (GHashTable *hash)
 		gtk_spin_button_set_value (GTK_SPIN_BUTTON (widget), 1400);
 	}
 
-out:
-	g_free (ui_file);
 	return dialog;
 }
 
 GHashTable *
-advanced_dialog_new_hash_from_dialog (GtkWidget *dialog, GError **error)
+ppp_dialog_new_hash_from_dialog (GtkWidget *dialog, GError **error)
 {
 	GHashTable *hash;
 	GtkWidget *widget;
@@ -531,6 +524,7 @@ advanced_dialog_new_hash_from_dialog (GtkWidget *dialog, GError **error)
 	gboolean valid;
 	int mtu_num;
 	int mru_num;
+	char *authtype = NULL;
 
 	g_return_val_if_fail (dialog != NULL, NULL);
 	if (error)
@@ -588,40 +582,43 @@ advanced_dialog_new_hash_from_dialog (GtkWidget *dialog, GError **error)
 		g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_LCP_ECHO_INTERVAL), g_strdup_printf ("%d", 30));
 	}
 
-	widget = GTK_WIDGET (gtk_builder_get_object (builder, "ppp_auth_methods"));
-	model = gtk_tree_view_get_model (GTK_TREE_VIEW (widget));
-	valid = gtk_tree_model_get_iter_first (model, &iter);
-	while (valid) {
-		gboolean allowed;
-		guint32 tag;
+	authtype = g_object_get_data (G_OBJECT (dialog), "auth-type");
+	if (   !strcmp (authtype, NM_L2TP_AUTHTYPE_PASSWORD)) {
+		widget = GTK_WIDGET (gtk_builder_get_object (builder, "ppp_auth_methods"));
+		model = gtk_tree_view_get_model (GTK_TREE_VIEW (widget));
+		valid = gtk_tree_model_get_iter_first (model, &iter);
+		while (valid) {
+			gboolean allowed;
+			guint32 tag;
 
-		gtk_tree_model_get (model, &iter, COL_VALUE, &allowed, COL_TAG, &tag, -1);
-		switch (tag) {
-		case TAG_PAP:
-			if (!allowed)
-				g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_PAP), g_strdup ("yes"));
-			break;
-		case TAG_CHAP:
-			if (!allowed)
-				g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_CHAP), g_strdup ("yes"));
-			break;
-		case TAG_MSCHAP:
-			if (!allowed)
-				g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_MSCHAP), g_strdup ("yes"));
-			break;
-		case TAG_MSCHAPV2:
-			if (!allowed)
-				g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_MSCHAPV2), g_strdup ("yes"));
-			break;
-		case TAG_EAP:
-			if (!allowed)
-				g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_EAP), g_strdup ("yes"));
-			break;
-		default:
-			break;
+			gtk_tree_model_get (model, &iter, COL_VALUE, &allowed, COL_TAG, &tag, -1);
+			switch (tag) {
+			case TAG_PAP:
+				if (!allowed)
+					g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_PAP), g_strdup ("yes"));
+				break;
+			case TAG_CHAP:
+				if (!allowed)
+					g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_CHAP), g_strdup ("yes"));
+				break;
+			case TAG_MSCHAP:
+				if (!allowed)
+					g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_MSCHAP), g_strdup ("yes"));
+				break;
+			case TAG_MSCHAPV2:
+				if (!allowed)
+					g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_MSCHAPV2), g_strdup ("yes"));
+				break;
+			case TAG_EAP:
+				if (!allowed)
+					g_hash_table_insert (hash, g_strdup (NM_L2TP_KEY_REFUSE_EAP), g_strdup ("yes"));
+				break;
+			default:
+				break;
+			}
+
+			valid = gtk_tree_model_iter_next (model, &iter);
 		}
-
-		valid = gtk_tree_model_iter_next (model, &iter);
 	}
 
 	widget = GTK_WIDGET (gtk_builder_get_object (builder, "ppp_mtu_spinbutton"));
